@@ -1,0 +1,523 @@
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { Play, Pause, SkipForward, RotateCcw, AlertCircle, CheckCircle, XCircle, MousePointer2 } from 'lucide-react';
+
+// --- Default Configuration (No positions needed) ---
+const DEFAULT_CONFIG = `{
+  "states": ["q0", "q1", "q2", "q3"],
+  "alphabet": ["0", "1"],
+  "startState": "q0",
+  "acceptStates": ["q3"],
+  "transitions": {
+    "q0": { "0": "q1", "1": "q0" },
+    "q1": { "0": "q2", "1": "q0" },
+    "q2": { "0": "q3", "1": "q0" },
+    "q3": { "0": "q3", "1": "q3" }
+  }
+}`;
+
+// --- Physics Constants ---
+// Ajustados para mayor separación
+const REPULSION = 12000;      // Antes 5000: Mayor fuerza de repulsión
+const SPRING_LENGTH = 200;    // Antes 120: Resortes más largos
+const SPRING_STRENGTH = 0.04; // Antes 0.05: Resortes un poco más relajados
+const DAMPING = 0.90;
+const CENTER_PULL = 0.01;     // Antes 0.02: Menor atracción al centro para permitir expansión
+
+// --- Helper: SVG Math ---
+const getPointOnCircle = (x, y, radius, angle) => ({
+  x: x + radius * Math.cos(angle),
+  y: y + radius * Math.sin(angle),
+});
+
+const calculateEdge = (source, target, isSelfLoop, radius = 30) => {
+  if (isSelfLoop) {
+    const x = source.x;
+    const y = source.y - radius;
+    return {
+      d: `M ${x - 10} ${y} C ${x - 40} ${y - 60}, ${x + 40} ${y - 60}, ${x + 10} ${y}`,
+      labelX: x,
+      labelY: y - 50
+    };
+  }
+
+  const dx = target.x - source.x;
+  const dy = target.y - source.y;
+  const angle = Math.atan2(dy, dx);
+  
+  const start = getPointOnCircle(source.x, source.y, radius, angle);
+  const end = getPointOnCircle(target.x, target.y, radius + 8, angle + Math.PI);
+
+  return {
+    d: `M ${start.x} ${start.y} L ${end.x} ${end.y}`,
+    labelX: (start.x + end.x) / 2,
+    labelY: (start.y + end.y) / 2 - 10
+  };
+};
+
+export default function DFAEngine() {
+  // --- Core State ---
+  const [code, setCode] = useState(DEFAULT_CONFIG);
+  const [parsedDFA, setParsedDFA] = useState(null);
+  const [error, setError] = useState(null);
+  const [inputString, setInputString] = useState("10100");
+  
+  // --- Simulation State ---
+  const [currentState, setCurrentState] = useState(null);
+  const [stepIndex, setStepIndex] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [verdict, setVerdict] = useState('pending');
+  const timerRef = useRef(null);
+
+  // --- Physics/Layout State ---
+  const [nodes, setNodes] = useState([]); // Array of { id, x, y, vx, vy }
+  const requestRef = useRef();
+  const draggingNode = useRef(null);
+  const svgRef = useRef(null);
+
+  // --- Parsing Logic ---
+  useEffect(() => {
+    try {
+      const dfa = JSON.parse(code);
+      
+      if (!dfa.states || !dfa.startState || !dfa.transitions) {
+        throw new Error("Faltan campos requeridos: states, startState, o transitions.");
+      }
+
+      setParsedDFA(dfa);
+      setError(null);
+      resetSimulation(dfa.startState);
+
+      // Initialize Nodes for Physics
+      const newNodes = dfa.states.map((s, i) => {
+        // Start in a random circle to avoid stacking
+        const angle = (i / dfa.states.length) * 2 * Math.PI;
+        const radius = 100;
+        return {
+          id: s,
+          x: 300 + radius * Math.cos(angle),
+          y: 200 + radius * Math.sin(angle),
+          vx: 0,
+          vy: 0
+        };
+      });
+      setNodes(newNodes);
+
+    } catch (e) {
+      setError(e.message);
+    }
+  }, [code]);
+
+  // --- Physics Engine Loop ---
+  const updatePhysics = useCallback(() => {
+    setNodes(prevNodes => {
+      if (!parsedDFA) return prevNodes;
+      
+      const nextNodes = prevNodes.map(n => ({ ...n }));
+      const width = svgRef.current?.clientWidth || 600;
+      const height = svgRef.current?.clientHeight || 400;
+
+      // 1. Repulsion (Coulomb's Law)
+      for (let i = 0; i < nextNodes.length; i++) {
+        for (let j = i + 1; j < nextNodes.length; j++) {
+          const n1 = nextNodes[i];
+          const n2 = nextNodes[j];
+          const dx = n1.x - n2.x;
+          const dy = n1.y - n2.y;
+          const distSq = dx * dx + dy * dy || 1; // Avoid div by zero
+          const dist = Math.sqrt(distSq);
+          
+          const force = REPULSION / distSq;
+          const fx = (dx / dist) * force;
+          const fy = (dy / dist) * force;
+
+          if (draggingNode.current !== n1.id) {
+            n1.vx += fx;
+            n1.vy += fy;
+          }
+          if (draggingNode.current !== n2.id) {
+            n2.vx -= fx;
+            n2.vy -= fy;
+          }
+        }
+      }
+
+      // 2. Spring Force (Hooke's Law) based on transitions
+      Object.entries(parsedDFA.transitions).forEach(([srcId, transitions]) => {
+        Object.values(transitions).forEach(targetId => {
+           if (srcId === targetId) return; // Ignore self loops for physics
+
+           const n1 = nextNodes.find(n => n.id === srcId);
+           const n2 = nextNodes.find(n => n.id === targetId);
+           if (!n1 || !n2) return;
+
+           const dx = n2.x - n1.x;
+           const dy = n2.y - n1.y;
+           const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+           const force = (dist - SPRING_LENGTH) * SPRING_STRENGTH;
+
+           const fx = (dx / dist) * force;
+           const fy = (dy / dist) * force;
+
+           if (draggingNode.current !== n1.id) {
+             n1.vx += fx;
+             n1.vy += fy;
+           }
+           if (draggingNode.current !== n2.id) {
+             n2.vx -= fx;
+             n2.vy -= fy;
+           }
+        });
+      });
+
+      // 3. Center Gravity & Boundary & Update
+      nextNodes.forEach(n => {
+        if (draggingNode.current === n.id) return; // Skip logic for dragged node
+
+        // Pull to center
+        n.vx += (width / 2 - n.x) * CENTER_PULL;
+        n.vy += (height / 2 - n.y) * CENTER_PULL;
+
+        // Apply Velocity
+        n.x += n.vx;
+        n.y += n.vy;
+
+        // Friction
+        n.vx *= DAMPING;
+        n.vy *= DAMPING;
+
+        // Hard Boundaries (bounce)
+        if (n.x < 30) { n.x = 30; n.vx *= -1; }
+        if (n.x > width - 30) { n.x = width - 30; n.vx *= -1; }
+        if (n.y < 30) { n.y = 30; n.vy *= -1; }
+        if (n.y > height - 30) { n.y = height - 30; n.vy *= -1; }
+      });
+
+      return nextNodes;
+    });
+
+    requestRef.current = requestAnimationFrame(updatePhysics);
+  }, [parsedDFA]);
+
+  useEffect(() => {
+    requestRef.current = requestAnimationFrame(updatePhysics);
+    return () => cancelAnimationFrame(requestRef.current);
+  }, [updatePhysics]);
+
+
+  // --- Drag Handlers ---
+  const handleMouseDown = (e, nodeId) => {
+    draggingNode.current = nodeId;
+    e.stopPropagation();
+  };
+
+  const handleMouseMove = (e) => {
+    if (draggingNode.current) {
+      const svgRect = svgRef.current.getBoundingClientRect();
+      const x = e.clientX - svgRect.left;
+      const y = e.clientY - svgRect.top;
+
+      setNodes(prev => prev.map(n => 
+        n.id === draggingNode.current 
+          ? { ...n, x, y, vx: 0, vy: 0 } 
+          : n
+      ));
+    }
+  };
+
+  const handleMouseUp = () => {
+    draggingNode.current = null;
+  };
+
+
+  // --- DFA Logic (Same as before) ---
+  const resetSimulation = (startStateOverride = null) => {
+    setIsPlaying(false);
+    setStepIndex(0);
+    setVerdict('pending');
+    if (parsedDFA || startStateOverride) {
+      setCurrentState(startStateOverride || parsedDFA.startState);
+    }
+  };
+
+  const step = () => {
+    if (!parsedDFA || verdict !== 'pending' || stepIndex > inputString.length) return;
+    if (stepIndex === inputString.length) {
+        const isAccepted = parsedDFA.acceptStates.includes(currentState);
+        setVerdict(isAccepted ? 'accepted' : 'rejected');
+        setIsPlaying(false);
+        return;
+    }
+    const char = inputString[stepIndex];
+    const transitions = parsedDFA.transitions[currentState];
+    if (transitions && transitions[char] !== undefined) {
+      setCurrentState(transitions[char]);
+      setStepIndex(prev => prev + 1);
+    } else {
+      setVerdict('rejected');
+      setIsPlaying(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isPlaying) {
+      timerRef.current = setInterval(step, 800);
+    } else {
+      clearInterval(timerRef.current);
+    }
+    return () => clearInterval(timerRef.current);
+  }, [isPlaying, currentState, stepIndex, verdict, parsedDFA]);
+
+  useEffect(() => { resetSimulation(); }, [inputString]);
+
+  // Aggregate edges for rendering
+  const edges = useMemo(() => {
+    if (!parsedDFA) return [];
+    const edgeMap = {};
+    Object.keys(parsedDFA.transitions).forEach(src => {
+      Object.entries(parsedDFA.transitions[src]).forEach(([char, tgt]) => {
+        const key = `${src}-${tgt}`;
+        if (!edgeMap[key]) edgeMap[key] = [];
+        edgeMap[key].push(char);
+      });
+    });
+    return Object.entries(edgeMap).map(([key, labels]) => {
+      const [src, tgt] = key.split('-');
+      return { src, tgt, labels: labels.join(','), isSelfLoop: src === tgt };
+    });
+  }, [parsedDFA]);
+
+
+  return (
+    <div className="flex flex-col h-screen bg-slate-900 text-slate-100 font-sans overflow-hidden" 
+         onMouseUp={handleMouseUp} 
+         onMouseMove={handleMouseMove}>
+      
+      {/* HEADER */}
+      <header className="flex items-center justify-between px-6 py-4 bg-slate-800 border-b border-slate-700 shadow-md z-10">
+        <div className="flex items-center gap-2">
+            <div className="w-8 h-8 bg-blue-600 rounded flex items-center justify-center font-bold text-lg shadow-lg shadow-blue-500/20">D</div>
+            <h1 className="text-xl font-bold tracking-tight text-slate-100">DFA Studio <span className="text-xs bg-slate-700 px-2 py-0.5 rounded text-slate-300 font-normal ml-2">Auto-Layout</span></h1>
+        </div>
+      </header>
+
+      <div className="flex flex-1 overflow-hidden">
+        
+        {/* EDITOR */}
+        <div className="w-1/3 min-w-[320px] flex flex-col border-r border-slate-700 bg-slate-950 z-20 shadow-xl">
+          <div className="bg-slate-900 px-4 py-3 text-xs font-mono uppercase text-blue-400 font-bold tracking-widest flex justify-between items-center border-b border-slate-800">
+            <span>Configuración (JSON)</span>
+            {error && <span className="text-red-400 flex items-center gap-1 animate-pulse"><AlertCircle size={12}/> Error de Sintaxis</span>}
+          </div>
+          <div className="flex-1 relative group">
+            <textarea
+              className={`w-full h-full bg-[#0B1120] p-6 font-mono text-sm leading-relaxed resize-none focus:outline-none text-slate-300 selection:bg-blue-500/30 ${error ? 'border-l-4 border-red-500' : ''}`}
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              spellCheck="false"
+            />
+          </div>
+        </div>
+
+        {/* VISUALIZATION */}
+        <div className="flex-1 flex flex-col bg-slate-900 relative">
+            
+            {/* TAPE AREA */}
+            <div className="h-32 bg-slate-800/80 backdrop-blur-sm border-b border-slate-700 flex flex-col items-center justify-center gap-4 relative z-10 shadow-sm">
+                <div className="flex items-center gap-4">
+                    <span className="text-xs uppercase font-bold text-slate-500 tracking-wider">Entrada</span>
+                    <input 
+                        type="text" 
+                        value={inputString}
+                        onChange={(e) => setInputString(e.target.value)}
+                        className="bg-slate-900 border border-slate-600 rounded px-4 py-1.5 font-mono text-slate-200 focus:outline-none focus:border-blue-500 w-64 text-center tracking-widest shadow-inner"
+                    />
+                </div>
+
+                <div className="flex items-center justify-center gap-1 font-mono text-lg h-10">
+                    {inputString.split('').map((char, index) => {
+                        const isCurrent = index === stepIndex;
+                        return (
+                            <div key={index} className={`
+                                w-8 h-12 flex items-center justify-center border-b-4 transition-all duration-300 rounded-t
+                                ${isCurrent ? 'border-blue-500 bg-blue-500/10 text-blue-300 -translate-y-1' : 'border-slate-700 text-slate-500'}
+                            `}>
+                                {char}
+                            </div>
+                        )
+                    })}
+                     <div className={`w-8 h-12 flex items-center justify-center border-b-4 transition-all duration-300 rounded-t ${stepIndex === inputString.length ? 'border-purple-500 bg-purple-500/10 text-purple-300' : 'border-transparent text-slate-700'}`}>
+                        #
+                     </div>
+                </div>
+
+                {/* Verdict Badge */}
+                <div className="absolute right-8 top-8 transition-all duration-500 transform">
+                    {verdict === 'accepted' && (
+                        <div className="flex items-center gap-2 text-green-400 bg-green-950/50 px-4 py-2 rounded-lg border border-green-800/50 shadow-lg shadow-green-900/20">
+                            <CheckCircle size={20} /> <span className="font-bold tracking-wide">ACEPTADO</span>
+                        </div>
+                    )}
+                    {verdict === 'rejected' && (
+                        <div className="flex items-center gap-2 text-red-400 bg-red-950/50 px-4 py-2 rounded-lg border border-red-800/50 shadow-lg shadow-red-900/20">
+                            <XCircle size={20} /> <span className="font-bold tracking-wide">RECHAZADO</span>
+                        </div>
+                    )}
+                </div>
+            </div>
+
+            {/* SVG CANVAS */}
+            <div className="flex-1 overflow-hidden relative cursor-default" ref={svgRef}>
+                <svg className="w-full h-full pointer-events-none"> {/* pointer-events-none on SVG to let mouse events pass to divs if needed, but we use svg elements */}
+                    <defs>
+                        <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="28" refY="3.5" orient="auto">
+                            <polygon points="0 0, 10 3.5, 0 7" fill="#64748b" />
+                        </marker>
+                        <marker id="arrowhead-active" markerWidth="10" markerHeight="7" refX="28" refY="3.5" orient="auto">
+                            <polygon points="0 0, 10 3.5, 0 7" fill="#60a5fa" />
+                        </marker>
+                    </defs>
+
+                    {/* EDGES */}
+                    {nodes.length > 0 && edges.map((edge, i) => {
+                        const n1 = nodes.find(n => n.id === edge.src);
+                        const n2 = nodes.find(n => n.id === edge.tgt);
+                        if (!n1 || !n2) return null;
+
+                        const isActive = currentState === edge.src && isPlaying; // Simplified active edge logic
+                        const pathData = calculateEdge(n1, n2, edge.isSelfLoop);
+                        
+                        return (
+                            <g key={i} className="pointer-events-auto">
+                                <path 
+                                    d={pathData.d} 
+                                    stroke={isActive ? "#60a5fa" : "#334155"} 
+                                    strokeWidth="2" 
+                                    fill="none" 
+                                    markerEnd={isActive ? "url(#arrowhead-active)" : "url(#arrowhead)"}
+                                    className="transition-colors duration-200"
+                                />
+                                <rect 
+                                    x={pathData.labelX - 12} 
+                                    y={pathData.labelY - 10} 
+                                    width="24" 
+                                    height="20" 
+                                    rx="4"
+                                    fill="#0f172a" 
+                                    className="opacity-90"
+                                />
+                                <text 
+                                    x={pathData.labelX} 
+                                    y={pathData.labelY} 
+                                    fill="#94a3b8" 
+                                    fontSize="11" 
+                                    textAnchor="middle" 
+                                    dominantBaseline="central"
+                                    fontWeight="bold"
+                                >
+                                    {edge.labels}
+                                </text>
+                            </g>
+                        );
+                    })}
+
+                    {/* NODES */}
+                    {nodes.map((node) => {
+                        const isCurrent = currentState === node.id;
+                        const isStart = parsedDFA && parsedDFA.startState === node.id;
+                        const isAccept = parsedDFA && parsedDFA.acceptStates.includes(node.id);
+
+                        return (
+                            <g 
+                                key={node.id} 
+                                transform={`translate(${node.x},${node.y})`}
+                                onMouseDown={(e) => handleMouseDown(e, node.id)}
+                                className="pointer-events-auto cursor-grab active:cursor-grabbing"
+                            >
+                                {/* Start Indicator */}
+                                {isStart && (
+                                    <path d="M -50 0 L -35 0" stroke="#64748b" strokeWidth="2" markerEnd="url(#arrowhead)" />
+                                )}
+
+                                {/* Main Circle */}
+                                <circle 
+                                    r="30" 
+                                    fill={isCurrent ? "#1d4ed8" : "#1e293b"} 
+                                    stroke={isCurrent ? "#60a5fa" : "#475569"} 
+                                    strokeWidth={isCurrent ? "3" : "2"}
+                                    className="transition-colors duration-200 shadow-xl"
+                                />
+
+                                {/* Accept Ring */}
+                                {isAccept && (
+                                    <circle r="24" fill="none" stroke={isCurrent ? "#93c5fd" : "#475569"} strokeWidth="2" />
+                                )}
+
+                                {/* Label */}
+                                <text 
+                                    fill={isCurrent ? "#ffffff" : "#cbd5e1"} 
+                                    fontSize="14" 
+                                    fontWeight="bold"
+                                    textAnchor="middle" 
+                                    dominantBaseline="central"
+                                    className="pointer-events-none select-none"
+                                >
+                                    {node.id}
+                                </text>
+                            </g>
+                        );
+                    })}
+                </svg>
+
+                {/* Drag Hint */}
+                <div className="absolute bottom-4 left-4 text-slate-600 text-xs flex items-center gap-2 pointer-events-none opacity-50">
+                    <MousePointer2 size={12} /> Arrastra los nodos para ajustar
+                </div>
+            </div>
+
+            {/* CONTROLS */}
+            <div className="absolute bottom-8 left-1/2 transform -translate-x-1/2 bg-slate-900/90 backdrop-blur-md border border-slate-700 rounded-2xl px-2 py-2 flex gap-2 shadow-2xl z-30">
+                <button 
+                    onClick={() => resetSimulation()}
+                    className="p-3 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition-colors"
+                    title="Reiniciar"
+                >
+                    <RotateCcw size={18} />
+                </button>
+                
+                <div className="w-px bg-slate-700 my-2 mx-1"></div>
+
+                {!isPlaying ? (
+                    <button 
+                        onClick={() => {
+                             if(verdict !== 'pending') resetSimulation();
+                             setIsPlaying(true);
+                        }}
+                        disabled={verdict !== 'pending' && stepIndex === inputString.length}
+                        className="p-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl shadow-lg shadow-blue-900/40 transition-all hover:scale-105 active:scale-95 disabled:opacity-50 disabled:grayscale"
+                    >
+                        <Play fill="currentColor" size={20} />
+                    </button>
+                ) : (
+                    <button 
+                        onClick={() => setIsPlaying(false)}
+                        className="p-3 bg-amber-500 hover:bg-amber-400 text-white rounded-xl shadow-lg shadow-amber-900/40 transition-all hover:scale-105 active:scale-95"
+                    >
+                        <Pause fill="currentColor" size={20} />
+                    </button>
+                )}
+
+                <button 
+                    onClick={step}
+                    disabled={isPlaying || verdict !== 'pending'}
+                    className="p-3 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition-colors disabled:opacity-30"
+                    title="Paso a paso"
+                >
+                    <SkipForward size={18} />
+                </button>
+            </div>
+            
+        </div>
+      </div>
+    </div>
+  );
+}
