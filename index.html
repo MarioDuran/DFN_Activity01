@@ -8,11 +8,11 @@
     <!-- 1. Tailwind CSS para el diseño -->
     <script src="https://cdn.tailwindcss.com"></script>
     
-    <!-- 2. Librerías de React (Versión de Desarrollo) -->
+    <!-- 2. Librerías de React -->
     <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     
-    <!-- 3. Babel para traducir JSX a JavaScript que el navegador entienda -->
+    <!-- 3. Babel para traducir el código React en el navegador -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     
     <style>
@@ -25,14 +25,15 @@
     </style>
 </head>
 <body>
-    <!-- Aquí es donde React "montará" la aplicación -->
+    <!-- Contenedor principal donde React montará la app -->
     <div id="root"></div>
 
-    <!-- Tu código de aplicación -->
+    <!-- CÓDIGO DE LA APLICACIÓN -->
     <script type="text/babel">
+        // Extraemos los hooks de la variable global React
         const { useState, useEffect, useRef, useMemo, useCallback } = React;
 
-        // --- ICONOS (SVG Inline para no depender de librerías externas) ---
+        // --- ICONOS (SVG Inline para no depender de librerías externas en Render) ---
         const Play = ({ size = 24, fill="none" }) => <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill={fill} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>;
         const Pause = ({ size = 24, fill="none" }) => <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill={fill} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>;
         const SkipForward = ({ size = 24 }) => <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 4 15 12 5 20 5 4"></polygon><line x1="19" y1="5" x2="19" y2="19"></line></svg>;
@@ -41,7 +42,6 @@
         const CheckCircle = ({ size = 24 }) => <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>;
         const XCircle = ({ size = 24 }) => <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>;
         const MousePointer2 = ({ size = 24 }) => <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m12 12 5.3 5.3"></path><path d="M4 4l3.17 14.26a1 1 0 0 0 1.83.17L12 12l6.57-2.99a1 1 0 0 0 .17-1.84L4 4z"></path></svg>;
-
 
         // --- CONFIGURACIÓN Y LÓGICA ---
         const DEFAULT_CONFIG = `{
@@ -57,6 +57,7 @@
           }
         }`;
 
+        // Configuraciones de física (Versión "Esponjada" / Separada)
         const REPULSION = 12000;
         const SPRING_LENGTH = 200;
         const SPRING_STRENGTH = 0.04;
@@ -73,7 +74,7 @@
             const x = source.x;
             const y = source.y - radius;
             return {
-              d: \`M \${x - 10} \${y} C \${x - 40} \${y - 60}, \${x + 40} \${y - 60}, \${x + 10} \${y}\`,
+              d: `M ${x - 10} ${y} C ${x - 40} ${y - 60}, ${x + 40} ${y - 60}, ${x + 10} ${y}`,
               labelX: x,
               labelY: y - 50
             };
@@ -87,7 +88,7 @@
           const end = getPointOnCircle(target.x, target.y, radius + 8, angle + Math.PI);
 
           return {
-            d: \`M \${start.x} \${start.y} L \${end.x} \${end.y}\`,
+            d: `M ${start.x} ${start.y} L ${end.x} ${end.y}`,
             labelX: (start.x + end.x) / 2,
             labelY: (start.y + end.y) / 2 - 10
           };
@@ -111,6 +112,7 @@
           const draggingNode = useRef(null);
           const svgRef = useRef(null);
 
+          // Inicialización y Parseo
           useEffect(() => {
             try {
               const dfa = JSON.parse(code);
@@ -139,6 +141,7 @@
             }
           }, [code]);
 
+          // Motor de Física
           const updatePhysics = useCallback(() => {
             setNodes(prevNodes => {
               if (!parsedDFA) return prevNodes;
@@ -147,6 +150,7 @@
               const width = svgRef.current?.clientWidth || window.innerWidth;
               const height = svgRef.current?.clientHeight || window.innerHeight;
 
+              // Repulsión
               for (let i = 0; i < nextNodes.length; i++) {
                 for (let j = i + 1; j < nextNodes.length; j++) {
                   const n1 = nextNodes[i];
@@ -165,6 +169,7 @@
                 }
               }
 
+              // Resortes (Conexiones)
               Object.entries(parsedDFA.transitions).forEach(([srcId, transitions]) => {
                 Object.values(transitions).forEach(targetId => {
                    if (srcId === targetId) return;
@@ -185,6 +190,7 @@
                 });
               });
 
+              // Gravedad central y actualización
               nextNodes.forEach(n => {
                 if (draggingNode.current === n.id) return;
                 n.vx += (width / 2 - n.x) * CENTER_PULL;
@@ -193,6 +199,8 @@
                 n.y += n.vy;
                 n.vx *= DAMPING;
                 n.vy *= DAMPING;
+                
+                // Límites
                 if (n.x < 30) { n.x = 30; n.vx *= -1; }
                 if (n.x > width - 30) { n.x = width - 30; n.vx *= -1; }
                 if (n.y < 30) { n.y = 30; n.vy *= -1; }
@@ -261,7 +269,7 @@
             const edgeMap = {};
             Object.keys(parsedDFA.transitions).forEach(src => {
               Object.entries(parsedDFA.transitions[src]).forEach(([char, tgt]) => {
-                const key = `\${src}-\${tgt}`;
+                const key = `${src}-${tgt}`;
                 if (!edgeMap[key]) edgeMap[key] = [];
                 edgeMap[key].push(char);
               });
@@ -280,7 +288,7 @@
               <header className="flex items-center justify-between px-6 py-4 bg-slate-800 border-b border-slate-700 shadow-md z-10">
                 <div className="flex items-center gap-2">
                     <div className="w-8 h-8 bg-blue-600 rounded flex items-center justify-center font-bold text-lg shadow-lg shadow-blue-500/20">D</div>
-                    <h1 className="text-xl font-bold tracking-tight text-slate-100">DFA Studio <span className="text-xs bg-slate-700 px-2 py-0.5 rounded text-slate-300 font-normal ml-2">Web Standalone</span></h1>
+                    <h1 className="text-xl font-bold tracking-tight text-slate-100">DFA Studio <span className="text-xs bg-slate-700 px-2 py-0.5 rounded text-slate-300 font-normal ml-2">Render Version</span></h1>
                 </div>
               </header>
 
@@ -294,7 +302,7 @@
                   </div>
                   <div className="flex-1 relative group">
                     <textarea
-                      className={\`w-full h-full bg-[#0B1120] p-6 font-mono text-sm leading-relaxed resize-none focus:outline-none text-slate-300 selection:bg-blue-500/30 \${error ? 'border-l-4 border-red-500' : ''}\`}
+                      className={`w-full h-full bg-[#0B1120] p-6 font-mono text-sm leading-relaxed resize-none focus:outline-none text-slate-300 selection:bg-blue-500/30 ${error ? 'border-l-4 border-red-500' : ''}`}
                       value={code}
                       onChange={(e) => setCode(e.target.value)}
                       spellCheck="false"
@@ -320,15 +328,15 @@
                             {inputString.split('').map((char, index) => {
                                 const isCurrent = index === stepIndex;
                                 return (
-                                    <div key={index} className={\`
+                                    <div key={index} className={`
                                         w-8 h-12 flex items-center justify-center border-b-4 transition-all duration-300 rounded-t
-                                        \${isCurrent ? 'border-blue-500 bg-blue-500/10 text-blue-300 -translate-y-1' : 'border-slate-700 text-slate-500'}
-                                    \`}>
+                                        ${isCurrent ? 'border-blue-500 bg-blue-500/10 text-blue-300 -translate-y-1' : 'border-slate-700 text-slate-500'}
+                                    `}>
                                         {char}
                                     </div>
                                 )
                             })}
-                             <div className={\`w-8 h-12 flex items-center justify-center border-b-4 transition-all duration-300 rounded-t \${stepIndex === inputString.length ? 'border-purple-500 bg-purple-500/10 text-purple-300' : 'border-transparent text-slate-700'}\`}>
+                             <div className={`w-8 h-12 flex items-center justify-center border-b-4 transition-all duration-300 rounded-t ${stepIndex === inputString.length ? 'border-purple-500 bg-purple-500/10 text-purple-300' : 'border-transparent text-slate-700'}`}>
                                 #
                              </div>
                         </div>
@@ -408,7 +416,7 @@
                                 return (
                                     <g 
                                         key={node.id} 
-                                        transform={\`translate(\${node.x},\${node.y})\`}
+                                        transform={`translate(${node.x},${node.y})`}
                                         onMouseDown={(e) => handleMouseDown(e, node.id)}
                                         className="pointer-events-auto cursor-grab active:cursor-grabbing"
                                     >
@@ -492,7 +500,7 @@
           );
         }
 
-        // --- MONTAJE DE LA APP ---
+        // --- MONTAJE DE LA APP EN EL DOM ---
         const root = ReactDOM.createRoot(document.getElementById('root'));
         root.render(<DFAEngine />);
     </script>
